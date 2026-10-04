@@ -13,6 +13,8 @@ const STR = {
     safety: "Safety", offline: "✓ Ready to work without internet", online: "Works on this phone",
     photoOf: "Photo of", healthyNote: "No disease found. Keep checking your crop every week.",
     loadFail: "Could not start the app. Reload the page once with internet.",
+    looksLike: "This looks like a {crop} leaf, not {picked}.", switchTo: "Check it as {crop}",
+    keep: "No, it is {picked}",
   },
   hi: {
     app: "पत्ती जाँच", loading: "तैयार हो रहा है…", pick: "कौन सी फ़सल है?",
@@ -25,6 +27,8 @@ const STR = {
     safety: "सुरक्षा", offline: "✓ बिना इंटरनेट के काम करने को तैयार", online: "इस फ़ोन पर चलता है",
     photoOf: "फ़ोटो:", healthyNote: "कोई बीमारी नहीं मिली। हर हफ़्ते फ़सल जाँचते रहें।",
     loadFail: "ऐप शुरू नहीं हो सका। इंटरनेट के साथ पेज एक बार फिर खोलें।",
+    looksLike: "यह {picked} नहीं, {crop} की पत्ती लगती है।", switchTo: "{crop} की तरह जाँचें",
+    keep: "नहीं, यह {picked} ही है",
   },
 };
 const EMOJI = { bean: "🫘", coffee: "☕", maize: "🌽" };
@@ -88,13 +92,44 @@ async function onPhoto(file) {
     const r = await Infer.predict(toCanvas(img));
     state.probs = r.probs;
     state.answers = {};
+    state.mismatchDismissed = false;
     $("status").textContent = `${r.backend} · ${r.latency_ms} ms · model ${r.model_version}`;
     render();
   };
   img.src = state.photoUrl;
 }
 
+// The model scores every crop at once. If the photo clearly belongs to another crop than the one
+// picked, say so instead of forcing an answer from the wrong crop's diseases.
+const MISMATCH_MIN = 0.6;
+function otherCropGuess() {
+  if (state.mismatchDismissed) return null;
+  const totals = {};
+  for (const [id, p] of Object.entries(state.probs)) {
+    const c = state.L.diseases[id] && state.L.diseases[id].crop_id;
+    if (c) totals[c] = (totals[c] || 0) + p;
+  }
+  const best = Object.entries(totals).sort((a, b) => b[1] - a[1])[0];
+  return best && best[0] !== state.crop && best[1] >= MISMATCH_MIN && state.L.crops[best[0]].enabled ? best[0] : null;
+}
+
+function renderMismatch(other) {
+  const fill = k => S(k).replace("{crop}", cropName(other)).replace("{picked}", cropName(state.crop));
+  $("r-body").innerHTML = `
+    <div class="card possible"><h3>${EMOJI[other] || "🌱"} ${esc(fill("looksLike"))}</h3></div>
+    <div class="stack" style="margin-bottom:12px">
+      <button class="big" id="mm-switch">${esc(fill("switchTo"))}</button>
+      <button class="big secondary" id="mm-keep">${esc(fill("keep"))}</button>
+    </div>`;
+  $("mm-switch").onclick = () => { state.crop = other; state.answers = {}; render(); };
+  $("mm-keep").onclick = () => { state.mismatchDismissed = true; render(); };
+  $("r-disclaimer").textContent = state.L.uiText("disclaimer", state.lang);
+  show("result");
+}
+
 function render() {
+  const other = otherCropGuess();
+  if (other) return renderMismatch(other);
   const answers = Object.keys(state.answers).length ? state.answers : null;
   const resp = state.L.buildResponse(state.crop, state.probs, state.lang, answers);
   state.resp = resp;
